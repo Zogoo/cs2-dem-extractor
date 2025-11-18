@@ -1,0 +1,35 @@
+# Binaries
+dem-parser
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+
+# Test binary
+*.test
+
+# Input directory
+input/*
+# Output directory
+output/*
+test_output/
+custom_output/
+
+# CSV files
+*.csv
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Go
+*.mod.bak
+
