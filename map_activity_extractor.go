@@ -12,26 +12,30 @@ import (
 )
 
 type MapActivity struct {
-	Tick           int
-	Time           float64
-	Round          int
-	RoundPhase     string
-	PlayerName     string
-	PlayerTeam     string
-	X              float64
-	Y              float64
-	Z              float64
-	ViewDirectionX float32
-	ViewDirectionY float32
-	PlaceName      string
-	Activity       string
-	Weapon         string
-	Health         int
-	Armor          int
-	IsAlive        bool
-	HasC4          bool
-	IsInBombZone   bool
-	IsInBuyZone    bool
+	Tick             int
+	Time             float64
+	Round            int
+	RoundPhase       string
+	PlayerName       string
+	PlayerTeam       string
+	X                float64
+	Y                float64
+	Z                float64
+	ViewDirectionX   float32
+	ViewDirectionY   float32
+	PlaceName        string
+	Activity         string
+	Weapon           string
+	Health           int
+	Armor            int
+	IsAlive          bool
+	HasC4            bool
+	IsInBombZone     bool
+	IsInBuyZone      bool
+	TacticalZone     string
+	TeamFormation    string
+	RoundTactic      string
+	RoundPhaseDetail string
 }
 
 func extractMapActivities(p dem.Parser, demoPath string, state *ProcessingState) {
@@ -297,6 +301,7 @@ func writeMapActivitiesToCSV(filename string, activities []MapActivity) error {
 		"Tick", "Time", "Round", "RoundPhase", "PlayerName", "PlayerTeam",
 		"X", "Y", "Z", "ViewDirectionX", "ViewDirectionY", "PlaceName", "Activity", "Weapon",
 		"Health", "Armor", "IsAlive", "HasC4", "IsInBombZone", "IsInBuyZone",
+		"TacticalZone", "TeamFormation", "RoundTactic", "RoundPhaseDetail",
 	}
 
 	if err := writer.Write(header); err != nil {
@@ -325,6 +330,10 @@ func writeMapActivitiesToCSV(filename string, activities []MapActivity) error {
 			strconv.FormatBool(activity.HasC4),
 			strconv.FormatBool(activity.IsInBombZone),
 			strconv.FormatBool(activity.IsInBuyZone),
+			activity.TacticalZone,
+			activity.TeamFormation,
+			activity.RoundTactic,
+			activity.RoundPhaseDetail,
 		}
 
 		if err := writer.Write(record); err != nil {

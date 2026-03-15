@@ -33,3 +33,7 @@ Thumbs.db
 # Go
 *.mod.bak
 
+.cursor/plans/*
+gnn/__pycache__/
+gnn/data/
+gnn/venv/

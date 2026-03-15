@@ -14,6 +14,7 @@ import (
 	dem "github.com/markus-wa/demoinfocs-golang/v5/pkg/demoinfocs"
 	common "github.com/markus-wa/demoinfocs-golang/v5/pkg/demoinfocs/common"
 	"github.com/markus-wa/demoinfocs-golang/v5/pkg/demoinfocs/events"
+	"github.com/markus-wa/demoinfocs-golang/v5/pkg/demoinfocs/msg"
 )
 
 type GameEvent struct {
@@ -51,6 +52,7 @@ type ProcessingState struct {
 	bombSite            string
 	mapActivities       []MapActivity
 	currentMapRound     int
+	mapName             string
 }
 
 func main() {
@@ -266,17 +268,28 @@ func processDemoFile(demoPath, outputFolder string) {
 	fmt.Println("3. Map activities...")
 	extractMapActivities(p, demoPath, state)
 
+	// Detect map name from server info message
+	p.RegisterNetMessageHandler(func(m *msg.CSVCMsg_ServerInfo) {
+		state.mapName = m.GetMapName()
+		fmt.Printf("  Detected map: %s\n", state.mapName)
+	})
+
 	err = p.ParseToEnd()
 	if err != nil {
 		fmt.Printf("Error parsing demo: %v\n", err)
 		return
 	}
 
+	// Enrich map activities with tactical columns (retrospective analysis)
+	fmt.Println("4. Enriching map activities with tactical data...")
+	roundTactics := enrichMapActivities(state)
+
 	fmt.Printf("\nExtraction complete!\n")
 	fmt.Printf("  - Timeline events: %d\n", len(state.gameEvents))
 	fmt.Printf("  - Tactical events: %d\n", len(state.tacticalEvents))
 	fmt.Printf("  - Round summaries: %d\n", len(state.roundSummaries))
 	fmt.Printf("  - Map activities: %d\n", len(state.mapActivities))
+	fmt.Printf("  - Round tactics: %d\n", len(roundTactics))
 
 	fmt.Println("\nWriting output files...")
 
@@ -309,6 +322,14 @@ func processDemoFile(demoPath, outputFolder string) {
 	err = writeMapActivitiesToCSV(mapOutput, state.mapActivities)
 	if err != nil {
 		fmt.Printf("Error writing map activities CSV: %v\n", err)
+		return
+	}
+
+	tacticOutput := filepath.Join(outputFolder, baseNameWithoutExt+"_round_tactics.csv")
+	fmt.Printf("  Writing round tactics: %s\n", tacticOutput)
+	err = writeRoundTacticsToCSV(tacticOutput, roundTactics)
+	if err != nil {
+		fmt.Printf("Error writing round tactics CSV: %v\n", err)
 		return
 	}
 
