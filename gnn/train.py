@@ -181,6 +181,7 @@ def train_one_map(map_name: str, graphs: list, tactic_classes: list,
         num_classes=num_classes,
         hidden_channels=hidden,
         dropout=0.1,
+        num_layers=2,
     ).to(device)
 
     optimizer = torch.optim.AdamW(model.parameters(), lr=lr, weight_decay=1e-5)
@@ -341,12 +342,148 @@ def train_cross_map(output_dir: str = None, epochs: int = 250,
     return model, acc
 
 
+# ── Full-dataset training (no test split) ─────────────────────────────────
+
+def train_full_dataset(output_dir: str = None, epochs: int = 2000,
+                       batch_size: int = 8, lr: float = 0.001,
+                       save_dir: str = None):
+    """
+    Train on ALL available graphs — no held-out test set.
+
+    Use case: demo annotation / label verification on the exact demos you
+    have parsed. The model learns every round's pattern and should approach
+    100% training accuracy. This is NOT a generalisation benchmark;
+    it answers "can the GNN correctly understand these specific demos?"
+
+    Settings that differ from eval mode:
+      - 3 GCN layers (more capacity to memorise 80-160 graphs/map)
+      - hidden=256 (wider for richer pattern storage)
+      - dropout=0.0 (no regularisation — we WANT to fit this data)
+      - lr=0.001 (higher to converge faster)
+      - epochs=2000 (enough to fully converge)
+      - batch_size=8 (small batches → more gradient steps per epoch)
+    """
+    device = torch.device("cuda" if torch.cuda.is_available() else
+                          "mps" if torch.backends.mps.is_available() else "cpu")
+    print(f"Device: {device}  |  Mode: FULL DATASET (no test split)\n")
+
+    if save_dir is None:
+        save_dir = os.path.join(os.path.dirname(__file__), "data")
+    os.makedirs(save_dir, exist_ok=True)
+
+    if output_dir is None:
+        output_dir = os.path.join(os.path.dirname(__file__), "..", "output")
+
+    map_data = load_graphs_per_map(output_dir, snapshot_offsets=(25.0, 30.0, 35.0))
+    if not map_data:
+        print("No graphs built. Check output directory.")
+        return {}
+
+    summary = {}
+    for map_name, info in map_data.items():
+        graphs = info["graphs"]
+        tactic_classes = info["classes"]
+        num_classes = len(tactic_classes)
+
+        print(f"\n{'='*60}")
+        print(f"Map: {map_name}  |  {len(graphs)} graphs  |  {num_classes} classes")
+        print(f"Classes: {tactic_classes}")
+        for cls, n in Counter(g.tactic_class for g in graphs).most_common():
+            print(f"  {cls}: {n}")
+
+        # ALL graphs go to training — no test set
+        train_loader = DataLoader(graphs, batch_size=batch_size, shuffle=True)
+
+        labels = np.array([g.y.item() for g in graphs])
+        unique = np.unique(labels)
+        weights = compute_class_weight("balanced", classes=unique, y=labels)
+        class_weights = torch.zeros(num_classes)
+        for cls, w in zip(unique, weights):
+            class_weights[cls] = w
+        class_weights = class_weights.to(device)
+
+        model = TacticGCN(
+            num_node_features=NUM_NODE_FEATURES,
+            num_classes=num_classes,
+            hidden_channels=256,
+            dropout=0.0,
+            num_layers=3,
+        ).to(device)
+
+        optimizer = torch.optim.Adam(model.parameters(), lr=lr)
+        scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
+            optimizer, T_max=epochs, eta_min=1e-5)
+        criterion = torch.nn.CrossEntropyLoss(weight=class_weights)
+
+        model_path = os.path.join(save_dir, f"full_model_{map_name}.pt")
+        best_acc = 0.0
+        best_epoch = 0
+
+        print(f"\n{'Epoch':>6} {'Loss':>10} {'TrainAcc':>9} {'LR':>10}")
+        print("-" * 40)
+
+        for epoch in range(1, epochs + 1):
+            tr_loss, tr_acc = train_one_epoch(
+                model, train_loader, optimizer, criterion, device)
+            scheduler.step()
+
+            if tr_acc > best_acc:
+                best_acc = tr_acc
+                best_epoch = epoch
+                torch.save({
+                    "epoch": epoch,
+                    "model_state_dict": model.state_dict(),
+                    "train_acc": tr_acc,
+                    "num_node_features": NUM_NODE_FEATURES,
+                    "num_classes": num_classes,
+                    "hidden_channels": 256,
+                    "num_layers": 3,
+                    "tactic_classes": tactic_classes,
+                    "map_name": map_name,
+                }, model_path)
+
+            if epoch % 100 == 0 or epoch == 1 or tr_acc >= 1.0:
+                lr_now = optimizer.param_groups[0]["lr"]
+                print(f"{epoch:>6} {tr_loss:>10.4f} {tr_acc:>8.1%} {lr_now:>10.6f}")
+                if tr_acc >= 1.0:
+                    print(f"  → 100% training accuracy reached at epoch {epoch}!")
+                    break
+
+        print(f"\nBest training accuracy: {best_acc:.1%} at epoch {best_epoch}")
+
+        # Final classification report on training data
+        ckpt = torch.load(model_path, weights_only=False)
+        model.load_state_dict(ckpt["model_state_dict"])
+        test_loader = DataLoader(graphs, batch_size=32)
+        _, _, preds, true_labels = evaluate(model, test_loader, criterion, device)
+        present = sorted(set(true_labels))
+        names = [tactic_classes[i] for i in present]
+        print(f"\nFull training set classification report ({map_name}):")
+        print(classification_report(true_labels, preds,
+                                    labels=present, target_names=names,
+                                    zero_division=0))
+        summary[map_name] = best_acc
+
+    print(f"\n{'='*60}")
+    print("FINAL SUMMARY — Training Accuracy (all data, no test split)")
+    print(f"{'='*60}")
+    for map_name, acc in summary.items():
+        print(f"  {map_name:>12}: {acc:.1%}")
+    print(f"  {'Average':>12}: {np.mean(list(summary.values())):.1%}")
+    return summary
+
+
 if __name__ == "__main__":
     args = sys.argv[1:]
+    full_mode = "--full" in args
     cross_map = "--cross-map" in args
     output_dir = next((a for a in args if not a.startswith("--")), None)
 
-    if cross_map:
+    if full_mode:
+        print("Full-dataset mode: training on ALL data, no test split.")
+        print("Goal: verify the GNN can learn these specific demos (100% target).\n")
+        train_full_dataset(output_dir=output_dir, epochs=2000)
+    elif cross_map:
         print("Training cross-map model (broad labels, lower accuracy expected)...")
         train_cross_map(output_dir=output_dir, epochs=500)
     else:
