@@ -414,18 +414,128 @@ def load_graphs(path: str) -> list:
     return graphs
 
 
+# ── Per-demo caching (incremental pipeline) ────────────────────────────────
+
+def build_and_cache_demo(act_file: str, cache_dir: str,
+                         snapshot_offsets=(25.0, 30.0, 35.0)):
+    """Build graphs for one demo and save to cache_dir/{base}.pt. Skips if cached."""
+    base = os.path.basename(act_file).replace("_map_activities.csv", "")
+    cache_path = os.path.join(cache_dir, base + ".pt")
+    if os.path.exists(cache_path):
+        print(f"  Skipping {base} (already cached)")
+        return
+
+    tactic_file = act_file.replace("_map_activities.csv", "_round_tactics.csv")
+    if not os.path.exists(tactic_file):
+        print(f"  Skipping {base}: no _round_tactics.csv found")
+        return
+
+    df = pd.read_csv(act_file)
+    tactics_df = pd.read_csv(tactic_file)
+    _parse_bools(df)
+
+    stats = compute_map_stats(df)
+    tactic_classes = get_map_classes(tactics_df)
+    tactic_to_idx = {c: i for i, c in enumerate(tactic_classes)}
+    tactic_map = dict(zip(tactics_df["Round"], tactics_df["T_TacticLabel"]))
+    map_name = base.split("-")[-1] if "-" in base else base
+
+    graphs = _build_map_graphs(df, tactic_map, tactic_classes,
+                               tactic_to_idx, stats, map_name, snapshot_offsets)
+
+    os.makedirs(cache_dir, exist_ok=True)
+    torch.save({"map_name": map_name, "graphs": graphs, "stats": stats, "base": base},
+               cache_path)
+    print(f"  Cached {len(graphs)} graphs → {cache_path}")
+
+
+def build_incremental(output_dir: str, cache_dir: str,
+                      snapshot_offsets=(25.0, 30.0, 35.0)):
+    """Scan output_dir for new demos and cache any that haven't been processed yet."""
+    act_files = sorted(glob.glob(os.path.join(output_dir, "*_map_activities.csv")))
+    print(f"Found {len(act_files)} demo(s) in {output_dir}")
+    for act_file in act_files:
+        build_and_cache_demo(act_file, cache_dir, snapshot_offsets)
+    print(f"\nDone. Cache directory: {cache_dir}")
+
+
+def load_graphs_per_map_from_cache(cache_dir: str) -> dict:
+    """
+    Load all per-demo .pt files from cache_dir and merge them per map.
+    Re-indexes class labels globally so demos with different label sets combine cleanly.
+    Returns dict: {map_name: {'graphs': [...], 'classes': [...], 'stats': {...}}}
+    """
+    pt_files = sorted(glob.glob(os.path.join(cache_dir, "*.pt")))
+    if not pt_files:
+        print(f"No .pt files found in {cache_dir}")
+        return {}
+
+    per_map_graphs: dict = {}
+    per_map_stats: dict = {}
+    per_map_bases: dict = {}
+
+    for pt_file in pt_files:
+        data = torch.load(pt_file, weights_only=False)
+        map_name = data["map_name"]
+        if map_name not in per_map_graphs:
+            per_map_graphs[map_name] = []
+            per_map_stats[map_name] = data["stats"]
+            per_map_bases[map_name] = []
+        per_map_graphs[map_name].extend(data["graphs"])
+        per_map_bases[map_name].append(data["base"])
+
+    result = {}
+    for map_name, graphs in per_map_graphs.items():
+        counts = Counter(g.tactic_class for g in graphs)
+        classes = sorted(label for label, n in counts.items() if n >= MIN_SAMPLES_PER_MAP)
+        if any(n < MIN_SAMPLES_PER_MAP for n in counts.values()):
+            classes.append("Other")
+        cls_to_idx = {c: i for i, c in enumerate(classes)}
+
+        valid = []
+        for g in graphs:
+            cls = g.tactic_class if g.tactic_class in cls_to_idx else (
+                "Other" if "Other" in cls_to_idx else None)
+            if cls is None:
+                continue
+            g.y = torch.tensor([cls_to_idx[cls]], dtype=torch.long)
+            valid.append(g)
+
+        demos_count = len(per_map_bases[map_name])
+        print(f"{map_name}: {len(valid)} graphs from {demos_count} demo(s) | classes: {classes}")
+        result[map_name] = {
+            "graphs": valid,
+            "classes": classes,
+            "stats": per_map_stats[map_name],
+            "bases": per_map_bases[map_name],
+        }
+
+    return result
+
+
 if __name__ == "__main__":
-    import sys
-    output_dir = sys.argv[1] if len(sys.argv) > 1 else os.path.join(
-        os.path.dirname(__file__), "..", "output")
-    save_path = os.path.join(os.path.dirname(__file__), "data", "graphs.pt")
+    import argparse
+    _here = os.path.dirname(__file__)
+    parser = argparse.ArgumentParser(description="Build PyG graphs from dem-parser CSV output")
+    parser.add_argument("output_dir", nargs="?",
+                        default=os.path.join(_here, "..", "output"),
+                        help="Path to dem-parser output/ directory")
+    parser.add_argument("--incremental", action="store_true",
+                        help="Cache one .pt per demo; skip already-cached demos")
+    parser.add_argument("--cache-dir", default=os.path.join(_here, "data", "cache"),
+                        help="Directory for per-demo .pt cache files (--incremental)")
+    parser.add_argument("--save", default=os.path.join(_here, "data", "graphs.pt"),
+                        help="Output path for combined graphs.pt (non-incremental mode)")
+    args = parser.parse_args()
 
-    print(f"Building graphs from: {output_dir}")
-    graphs = load_and_build_graphs(output_dir)
-
-    if graphs:
-        labels_all = [g.tactic_class for g in graphs]
-        print("\nClass distribution:")
-        for cls, n in Counter(labels_all).most_common():
-            print(f"  {cls}: {n}")
-        save_graphs(graphs, save_path)
+    if args.incremental:
+        build_incremental(args.output_dir, args.cache_dir)
+    else:
+        print(f"Building graphs from: {args.output_dir}")
+        graphs = load_and_build_graphs(args.output_dir)
+        if graphs:
+            labels_all = [g.tactic_class for g in graphs]
+            print("\nClass distribution:")
+            for cls, n in Counter(labels_all).most_common():
+                print(f"  {cls}: {n}")
+            save_graphs(graphs, args.save)

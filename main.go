@@ -57,6 +57,8 @@ type ProcessingState struct {
 
 func main() {
 	inputFolder := flag.String("input", "input", "Path to input folder containing .dem files")
+	outputFolderFlag := flag.String("output", "output", "Path to output folder")
+	noClear := flag.Bool("no-clear", false, "Skip clearing output folder on startup (for incremental processing)")
 	flag.Parse()
 
 	err := os.MkdirAll(*inputFolder, 0755)
@@ -87,17 +89,19 @@ func main() {
 		os.Exit(1)
 	}
 
-	outputFolder := "output"
+	outputFolder := *outputFolderFlag
 
-	// Cleanup output folder before processing
-	if _, err := os.Stat(outputFolder); err == nil {
-		entries, err := os.ReadDir(outputFolder)
-		if err == nil {
-			for _, entry := range entries {
-				filePath := filepath.Join(outputFolder, entry.Name())
-				os.Remove(filePath)
+	if !*noClear {
+		if _, err := os.Stat(outputFolder); err == nil {
+			entries, err := os.ReadDir(outputFolder)
+			if err == nil {
+				for _, entry := range entries {
+					filePath := filepath.Join(outputFolder, entry.Name())
+					os.Remove(filePath)
+				}
 			}
 		}
+		fmt.Printf("Cleaned output folder: %s\n", outputFolder)
 	}
 
 	err = os.MkdirAll(outputFolder, 0755)
@@ -105,8 +109,6 @@ func main() {
 		fmt.Printf("Error creating output folder: %v\n", err)
 		os.Exit(1)
 	}
-
-	fmt.Printf("Cleaned output folder: %s\n", outputFolder)
 
 	numCPU := runtime.NumCPU()
 	workerCount := numCPU - 1

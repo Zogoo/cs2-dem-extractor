@@ -32,8 +32,8 @@ from collections import Counter
 from sklearn.metrics import classification_report
 
 from build_graphs import (
-    load_graphs_per_map, load_and_build_graphs,
-    save_graphs, load_graphs, NUM_NODE_FEATURES
+    load_graphs_per_map, load_graphs_per_map_from_cache,
+    load_and_build_graphs, save_graphs, load_graphs, NUM_NODE_FEATURES
 )
 from model import TacticGCN
 
@@ -246,10 +246,17 @@ def train_one_map(map_name: str, graphs: list, tactic_classes: list,
     return model, best_acc
 
 
-def train_per_map(output_dir: str = None, epochs: int = 250,
-                  batch_size: int = 16, lr: float = 0.0002,
-                  hidden: int = 64, save_dir: str = None):
-    """Train one GCN model per map using granular per-map labels."""
+def train_per_map(output_dir: str = None, graphs_dir: str = None,
+                  epochs: int = 250, batch_size: int = 16,
+                  lr: float = 0.0002, hidden: int = 64,
+                  save_dir: str = None):
+    """Train one GCN model per map using granular per-map labels.
+
+    Args:
+        output_dir:  Path to dem-parser output/ CSV directory (default source).
+        graphs_dir:  Path to per-demo .pt cache directory produced by
+                     build_graphs.py --incremental. Overrides output_dir when set.
+    """
     device = torch.device("cuda" if torch.cuda.is_available() else
                           "mps" if torch.backends.mps.is_available() else "cpu")
     print(f"Device: {device}")
@@ -258,12 +265,14 @@ def train_per_map(output_dir: str = None, epochs: int = 250,
         save_dir = os.path.join(os.path.dirname(__file__), "data")
     os.makedirs(save_dir, exist_ok=True)
 
-    if output_dir is None:
-        output_dir = os.path.join(os.path.dirname(__file__), "..", "output")
-
-    # 25s/30s/35s = peak tactical divergence window.
-    # 20s: many still in approach, 40s: some dead from firefights.
-    map_data = load_graphs_per_map(output_dir, snapshot_offsets=(25.0, 30.0, 35.0))
+    if graphs_dir:
+        print(f"Loading graphs from cache: {graphs_dir}")
+        map_data = load_graphs_per_map_from_cache(graphs_dir)
+    else:
+        if output_dir is None:
+            output_dir = os.path.join(os.path.dirname(__file__), "..", "output")
+        # 25s/30s/35s = peak tactical divergence window.
+        map_data = load_graphs_per_map(output_dir, snapshot_offsets=(25.0, 30.0, 35.0))
     if not map_data:
         print("No graphs built. Check output directory.")
         return {}
@@ -344,9 +353,9 @@ def train_cross_map(output_dir: str = None, epochs: int = 250,
 
 # ── Full-dataset training (no test split) ─────────────────────────────────
 
-def train_full_dataset(output_dir: str = None, epochs: int = 2000,
-                       batch_size: int = 8, lr: float = 0.001,
-                       save_dir: str = None):
+def train_full_dataset(output_dir: str = None, graphs_dir: str = None,
+                       epochs: int = 2000, batch_size: int = 8,
+                       lr: float = 0.001, save_dir: str = None):
     """
     Train on ALL available graphs — no held-out test set.
 
@@ -371,10 +380,13 @@ def train_full_dataset(output_dir: str = None, epochs: int = 2000,
         save_dir = os.path.join(os.path.dirname(__file__), "data")
     os.makedirs(save_dir, exist_ok=True)
 
-    if output_dir is None:
-        output_dir = os.path.join(os.path.dirname(__file__), "..", "output")
-
-    map_data = load_graphs_per_map(output_dir, snapshot_offsets=(25.0, 30.0, 35.0))
+    if graphs_dir:
+        print(f"Loading graphs from cache: {graphs_dir}")
+        map_data = load_graphs_per_map_from_cache(graphs_dir)
+    else:
+        if output_dir is None:
+            output_dir = os.path.join(os.path.dirname(__file__), "..", "output")
+        map_data = load_graphs_per_map(output_dir, snapshot_offsets=(25.0, 30.0, 35.0))
     if not map_data:
         print("No graphs built. Check output directory.")
         return {}
@@ -474,18 +486,32 @@ def train_full_dataset(output_dir: str = None, epochs: int = 2000,
 
 
 if __name__ == "__main__":
-    args = sys.argv[1:]
-    full_mode = "--full" in args
-    cross_map = "--cross-map" in args
-    output_dir = next((a for a in args if not a.startswith("--")), None)
+    import argparse
+    parser = argparse.ArgumentParser(description="Train TacticGCN on CS2 tactic graphs")
+    parser.add_argument("output_dir", nargs="?", default=None,
+                        help="Path to dem-parser output/ CSV directory")
+    parser.add_argument("--graphs-dir", default=None, metavar="DIR",
+                        help="Load from per-demo .pt cache (build_graphs.py --incremental)")
+    parser.add_argument("--full", action="store_true",
+                        help="Full-dataset mode: train on ALL graphs, no test split")
+    parser.add_argument("--cross-map", action="store_true",
+                        help="Single cross-map model instead of per-map models")
+    parser.add_argument("--epochs", type=int, default=None,
+                        help="Override default epoch count")
+    parsed = parser.parse_args()
 
-    if full_mode:
+    graphs_dir = parsed.graphs_dir
+
+    if parsed.full:
         print("Full-dataset mode: training on ALL data, no test split.")
         print("Goal: verify the GNN can learn these specific demos (100% target).\n")
-        train_full_dataset(output_dir=output_dir, epochs=2000)
-    elif cross_map:
+        train_full_dataset(output_dir=parsed.output_dir, graphs_dir=graphs_dir,
+                           epochs=parsed.epochs or 2000)
+    elif parsed.cross_map:
         print("Training cross-map model (broad labels, lower accuracy expected)...")
-        train_cross_map(output_dir=output_dir, epochs=500)
+        train_cross_map(output_dir=parsed.output_dir,
+                        epochs=parsed.epochs or 500)
     else:
         print("Training per-map models (granular labels, recommended)...")
-        train_per_map(output_dir=output_dir, epochs=500)
+        train_per_map(output_dir=parsed.output_dir, graphs_dir=graphs_dir,
+                      epochs=parsed.epochs or 500)
