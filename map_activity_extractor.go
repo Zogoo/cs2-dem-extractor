@@ -36,6 +36,7 @@ type MapActivity struct {
 	TeamFormation    string
 	RoundTactic      string
 	RoundPhaseDetail string
+	GrenadeCount     int
 }
 
 func extractMapActivities(p dem.Parser, demoPath string, state *ProcessingState) {
@@ -88,6 +89,7 @@ func extractMapActivities(p dem.Parser, demoPath string, state *ProcessingState)
 						HasC4:          hasC4,
 						IsInBombZone:   player.IsInBombZone(),
 						IsInBuyZone:    player.IsInBuyZone(),
+						GrenadeCount:   countGrenades(player),
 					}
 
 					state.mapActivities = append(state.mapActivities, mapActivity)
@@ -103,6 +105,14 @@ func extractMapActivities(p dem.Parser, demoPath string, state *ProcessingState)
 			placeName := e.Shooter.LastPlaceName()
 			if placeName == "" {
 				placeName = "Unknown"
+			}
+
+			hasC4Shooter := false
+			for _, eq := range e.Shooter.Inventory {
+				if eq != nil && eq.Type.String() == "C4" {
+					hasC4Shooter = true
+					break
+				}
 			}
 
 			activity := MapActivity{
@@ -123,16 +133,10 @@ func extractMapActivities(p dem.Parser, demoPath string, state *ProcessingState)
 				Health:         e.Shooter.Health(),
 				Armor:          e.Shooter.Armor(),
 				IsAlive:        e.Shooter.IsAlive(),
-				HasC4:          false,
+				HasC4:          hasC4Shooter,
 				IsInBombZone:   e.Shooter.IsInBombZone(),
 				IsInBuyZone:    e.Shooter.IsInBuyZone(),
-			}
-
-			for _, eq := range e.Shooter.Inventory {
-				if eq != nil && eq.Type.String() == "C4" {
-					activity.HasC4 = true
-					break
-				}
+				GrenadeCount:   countGrenades(e.Shooter),
 			}
 
 			state.mapActivities = append(state.mapActivities, activity)
@@ -169,6 +173,7 @@ func extractMapActivities(p dem.Parser, demoPath string, state *ProcessingState)
 				HasC4:          true,
 				IsInBombZone:   true,
 				IsInBuyZone:    false,
+				GrenadeCount:   countGrenades(e.Player),
 			}
 
 			state.mapActivities = append(state.mapActivities, activity)
@@ -205,6 +210,7 @@ func extractMapActivities(p dem.Parser, demoPath string, state *ProcessingState)
 				HasC4:          false,
 				IsInBombZone:   true,
 				IsInBuyZone:    false,
+				GrenadeCount:   countGrenades(e.Player),
 			}
 
 			state.mapActivities = append(state.mapActivities, activity)
@@ -249,11 +255,22 @@ func extractMapActivities(p dem.Parser, demoPath string, state *ProcessingState)
 				HasC4:          hasC4,
 				IsInBombZone:   e.Player.IsInBombZone(),
 				IsInBuyZone:    e.Player.IsInBuyZone(),
+				GrenadeCount:   countGrenades(e.Player),
 			}
 
 			state.mapActivities = append(state.mapActivities, activity)
 		}
 	})
+}
+
+func countGrenades(player *common.Player) int {
+	count := 0
+	for _, eq := range player.Inventory {
+		if eq != nil && eq.Type.Class() == common.EqClassGrenade {
+			count++
+		}
+	}
+	return count
 }
 
 func determinePlayerActivity(player *common.Player) string {
@@ -301,7 +318,7 @@ func writeMapActivitiesToCSV(filename string, activities []MapActivity) error {
 		"Tick", "Time", "Round", "RoundPhase", "PlayerName", "PlayerTeam",
 		"X", "Y", "Z", "ViewDirectionX", "ViewDirectionY", "PlaceName", "Activity", "Weapon",
 		"Health", "Armor", "IsAlive", "HasC4", "IsInBombZone", "IsInBuyZone",
-		"TacticalZone", "TeamFormation", "RoundTactic", "RoundPhaseDetail",
+		"TacticalZone", "TeamFormation", "RoundTactic", "RoundPhaseDetail", "GrenadeCount",
 	}
 
 	if err := writer.Write(header); err != nil {
@@ -334,6 +351,7 @@ func writeMapActivitiesToCSV(filename string, activities []MapActivity) error {
 			activity.TeamFormation,
 			activity.RoundTactic,
 			activity.RoundPhaseDetail,
+			strconv.Itoa(activity.GrenadeCount),
 		}
 
 		if err := writer.Write(record); err != nil {

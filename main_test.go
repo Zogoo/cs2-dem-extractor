@@ -183,7 +183,7 @@ func verifyMapActivitiesCSV(t *testing.T, filePath string) {
 		return
 	}
 
-	expectedColumns := 24
+	expectedColumns := 25
 	if len(records[0]) != expectedColumns {
 		t.Errorf("Map activities CSV should have %d columns, got %d", expectedColumns, len(records[0]))
 	}
@@ -263,44 +263,44 @@ func TestResolveZone(t *testing.T) {
 	}{
 		// Overpass
 		{"de_overpass", "TSpawn", ZoneTSpawn},
-		{"de_overpass", "Fountain", ZoneAApproach},
+		{"de_overpass", "Fountain", ZoneAMain},
 		{"de_overpass", "BombsiteA", ZoneASite},
-		{"de_overpass", "Canal", ZoneBApproach},
+		{"de_overpass", "Canal", ZoneBMain},
 		{"de_overpass", "BombsiteB", ZoneBSite},
 		{"de_overpass", "Connector", ZoneMid},
 		{"de_overpass", "Tunnels", ZoneMid},
 		{"de_overpass", "Construction", ZoneMid},
 		// Inferno
-		{"de_inferno", "Apartments", ZoneAApproach},
-		{"de_inferno", "Banana", ZoneBApproach},
+		{"de_inferno", "Apartments", ZoneAMain},
+		{"de_inferno", "Banana", ZoneBBanana},
 		{"de_inferno", "BombsiteA", ZoneASite},
 		{"de_inferno", "CTSpawn", ZoneCTSpawn},
 		{"de_inferno", "Middle", ZoneMid},
 		// Nuke
-		{"de_nuke", "Ramp", ZoneBApproach},
+		{"de_nuke", "Ramp", ZoneBMain},
 		{"de_nuke", "Heaven", ZoneASite},
 		{"de_nuke", "Outside", ZoneMid},
 		{"de_nuke", "Admin", ZoneCTSpawn},
 		// Dust2
-		{"de_dust2", "Long", ZoneAApproach},
-		{"de_dust2", "UpperTunnels", ZoneBApproach},
+		{"de_dust2", "Long", ZoneALong},
+		{"de_dust2", "UpperTunnels", ZoneBTunnels},
 		{"de_dust2", "BombsiteB", ZoneBSite},
 		{"de_dust2", "Xbox", ZoneMid},
 		// Mirage
-		{"de_mirage", "PalaceInterior", ZoneAApproach},
-		{"de_mirage", "Apartments", ZoneBApproach},
+		{"de_mirage", "PalaceInterior", ZoneAMain},
+		{"de_mirage", "Apartments", ZoneBMain},
 		{"de_mirage", "Connector", ZoneMid},
 		// Ancient
-		{"de_ancient", "AMain", ZoneAApproach},
-		{"de_ancient", "BRamp", ZoneBApproach},
+		{"de_ancient", "AMain", ZoneAMain},
+		{"de_ancient", "BRamp", ZoneBMain},
 		{"de_ancient", "Middle", ZoneMid},
 		// Anubis
-		{"de_anubis", "AMain", ZoneAApproach},
-		{"de_anubis", "Canal", ZoneBApproach},
+		{"de_anubis", "AMain", ZoneAMain},
+		{"de_anubis", "Canal", ZoneBMain},
 		{"de_anubis", "BombsiteA", ZoneASite},
 		// Vertigo
-		{"de_vertigo", "ARamp", ZoneAApproach},
-		{"de_vertigo", "BStairs", ZoneBApproach},
+		{"de_vertigo", "ARamp", ZoneAMain},
+		{"de_vertigo", "BStairs", ZoneBMain},
 		{"de_vertigo", "Elevator", ZoneCTSpawn},
 		// Fallback cases
 		{"de_unknown_map", "BombsiteA", ZoneASite},
@@ -344,7 +344,7 @@ func TestComputeFormation(t *testing.T) {
 		{PlayerTeam: "T", IsAlive: true, TacticalZone: ZoneASite},
 		{PlayerTeam: "T", IsAlive: true, TacticalZone: ZoneASite},
 		{PlayerTeam: "T", IsAlive: true, TacticalZone: ZoneMid},
-		{PlayerTeam: "T", IsAlive: true, TacticalZone: ZoneBApproach},
+		{PlayerTeam: "T", IsAlive: true, TacticalZone: ZoneBMain},
 		{PlayerTeam: "T", IsAlive: true, TacticalZone: ZoneTSpawn},
 	}
 	indices := []int{0, 1, 2, 3, 4}
@@ -385,7 +385,7 @@ func TestRetrospectiveTacticClassification(t *testing.T) {
 		time := roundStart + float64(tick)*0.1
 		zone := ZoneTSpawn
 		if tick >= 50 {
-			zone = ZoneBApproach
+			zone = ZoneBMain
 		}
 		if tick >= 100 {
 			zone = ZoneBSite

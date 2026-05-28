@@ -9,119 +9,230 @@ import (
 	"strings"
 )
 
+// Expanded tactical zone set — 12 semantic zones plus Unknown.
+// Old A_APPROACH split into A_LONG / A_SHORT / A_MAIN per map.
+// Old B_APPROACH split into B_TUNNELS / B_BANANA / B_MAIN per map.
+// This lets the GNN distinguish e.g. a Dust2 Long rush from a Short rush.
 const (
-	ZoneTSpawn    = "T_SPAWN"
-	ZoneAApproach = "A_APPROACH"
-	ZoneBApproach = "B_APPROACH"
-	ZoneMid       = "MID"
-	ZoneASite     = "A_SITE"
-	ZoneBSite     = "B_SITE"
-	ZoneCTSpawn   = "CT_SPAWN"
-	ZoneUnknown   = "Unknown"
+	ZoneTSpawn   = "T_SPAWN"
+	ZoneALong    = "A_LONG"    // Dust2: Long/LongDoors/Pit; Train: ALong/PopDog
+	ZoneAShort   = "A_SHORT"   // Dust2: Catwalk/Short; Mirage: Short/Stairs
+	ZoneAMain    = "A_MAIN"    // Inferno: Apartments; Nuke: Hut/Squeaky; Mirage: Palace; etc.
+	ZoneASite    = "A_SITE"
+	ZoneBTunnels = "B_TUNNELS" // Dust2: Upper/LowerTunnels
+	ZoneBBanana  = "B_BANANA"  // Inferno: Banana
+	ZoneBMain    = "B_MAIN"    // Mirage: Apartments/Catwalk; Nuke: Ramp; Ancient: BMain; etc.
+	ZoneBSite    = "B_SITE"
+	ZoneMid      = "MID"
+	ZoneCTSpawn  = "CT_SPAWN"
+	ZoneUnknown  = "Unknown"
 )
 
-// Per-map callout-to-zone lookup tables. Keys are exact PlaceName strings from
-// the game engine (Player.LastPlaceName()). Verified from actual demo data for
-// Overpass, Inferno, and Nuke; standard callouts for the remaining maps.
+// AllZones is the canonical ordered list used for one-hot encoding in build_graphs.py.
+// Must stay in sync with TACTICAL_ZONES in build_graphs.py.
+var AllZones = []string{
+	ZoneTSpawn, ZoneALong, ZoneAShort, ZoneAMain, ZoneASite,
+	ZoneBTunnels, ZoneBBanana, ZoneBMain, ZoneBSite,
+	ZoneMid, ZoneCTSpawn, ZoneUnknown,
+}
+
+// isAside returns true for any A-side zone (approach or site).
+func isAside(zone string) bool {
+	return zone == ZoneASite || zone == ZoneALong || zone == ZoneAShort || zone == ZoneAMain
+}
+
+// isBside returns true for any B-side zone (approach or site).
+func isBside(zone string) bool {
+	return zone == ZoneBSite || zone == ZoneBTunnels || zone == ZoneBBanana || zone == ZoneBMain
+}
+
+// Per-map callout → zone lookup. Keys are exact PlaceName strings from
+// CS2's Player.LastPlaceName() API. All 7 Active Duty maps are covered.
 var mapCalloutTables = map[string]map[string]string{
-	"overpass": {
-		"TSpawn": ZoneTSpawn, "TStairs": ZoneTSpawn,
-		"Playground": ZoneAApproach, "Fountain": ZoneAApproach, "LowerPark": ZoneAApproach,
-		"UpperPark": ZoneAApproach, "Restroom": ZoneAApproach, "SideAlley": ZoneAApproach,
-		"BombsiteA": ZoneASite, "BackofA": ZoneASite, "UnderA": ZoneASite, "SnipersNest": ZoneASite,
-		"Canal": ZoneBApproach, "Water": ZoneBApproach, "Pipe": ZoneBApproach, "Walkway": ZoneBApproach,
-		"BombsiteB": ZoneBSite, "Bridge": ZoneBSite, "StorageRoom": ZoneBSite,
-		"Connector": ZoneMid, "Construction": ZoneMid, "Lobby": ZoneMid,
-		"Stairs": ZoneMid, "Tunnels": ZoneMid, "Alley": ZoneMid,
+
+	// ── Dust2 ─────────────────────────────────────────────────────────────
+	// A approach split: Long/LongDoors/Pit → A_LONG; Catwalk/Short → A_SHORT
+	// B approach renamed: Tunnels → B_TUNNELS
+	"dust2": {
+		"TSpawn": ZoneTSpawn, "TOutside": ZoneTSpawn,
+		"OutsideLong": ZoneTSpawn, "OutsideTunnel": ZoneTSpawn,
+
+		"Long": ZoneALong, "LongDoors": ZoneALong, "Pit": ZoneALong,
+		"Catwalk": ZoneAShort, "Short": ZoneAShort, "ShortStairs": ZoneAShort,
+
+		"BombsiteA": ZoneASite, "Goose": ZoneASite,
+		"Ramp": ZoneASite, "Barrels": ZoneASite, "ARamp": ZoneASite,
+
+		"UpperTunnels": ZoneBTunnels, "LowerTunnels": ZoneBTunnels, "Tunnel": ZoneBTunnels,
+
+		"BombsiteB": ZoneBSite, "BackPlatform": ZoneBSite, "Window": ZoneBSite,
+		"Closet": ZoneBSite, "BigBox": ZoneBSite, "BDoors": ZoneBSite,
+
+		"Middle": ZoneMid, "TopofMid": ZoneMid,
+		"Xbox": ZoneMid, "MidDoors": ZoneMid, "Palm": ZoneMid,
+
+		"CTSpawn": ZoneCTSpawn, "CTMid": ZoneCTSpawn,
 	},
+
+	// ── Inferno ───────────────────────────────────────────────────────────
+	// A approach: Apartments/Balcony → A_MAIN (single T-side approach)
+	// B approach: Banana → B_BANANA (the iconic corridor)
 	"inferno": {
 		"TSpawn": ZoneTSpawn, "TRamp": ZoneTSpawn,
-		"Apartments": ZoneAApproach, "Upstairs": ZoneAApproach, "Balcony": ZoneAApproach,
-		"BombsiteA": ZoneASite, "Pit": ZoneASite, "Quad": ZoneASite, "Graveyard": ZoneASite,
-		"Banana": ZoneBApproach,
+
+		"Apartments": ZoneAMain, "Upstairs": ZoneAMain, "Balcony": ZoneAMain,
+
+		"BombsiteA": ZoneASite, "Pit": ZoneASite,
+		"Quad": ZoneASite, "Graveyard": ZoneASite,
+
+		"Banana": ZoneBBanana,
+
 		"BombsiteB": ZoneBSite, "Bridge": ZoneBSite,
+
 		"Middle": ZoneMid, "TopofMid": ZoneMid, "SecondMid": ZoneMid,
 		"LowerMid": ZoneMid, "Underpass": ZoneMid,
+
 		"CTSpawn": ZoneCTSpawn, "BackAlley": ZoneCTSpawn, "Arch": ZoneCTSpawn,
 		"Kitchen": ZoneCTSpawn, "Library": ZoneCTSpawn, "Ruins": ZoneCTSpawn,
 	},
+
+	// ── Mirage ────────────────────────────────────────────────────────────
+	// A approach: Palace (ramp) → A_MAIN; Stairs (short) → A_SHORT
+	// B approach: Apartments/Catwalk → B_MAIN
+	"mirage": {
+		"TSpawn": ZoneTSpawn, "TRamp": ZoneTSpawn,
+
+		"PalaceInterior": ZoneAMain, "PalaceAlley": ZoneAMain,
+		"Stairs": ZoneAShort,
+
+		"BombsiteA": ZoneASite, "Balcony": ZoneASite,
+		"Truck": ZoneASite, "Scaffolding": ZoneASite,
+
+		"Apartments": ZoneBMain, "Catwalk": ZoneBMain,
+
+		"BombsiteB": ZoneBSite, "Tunnel": ZoneBSite,
+		"TunnelStairs": ZoneBSite, "TicketBooth": ZoneBSite,
+
+		"Middle": ZoneMid, "TopofMid": ZoneMid, "Connector": ZoneMid,
+		"Jungle": ZoneMid, "SnipersNest": ZoneMid, "Ladder": ZoneMid, "Shop": ZoneMid,
+
+		"CTSpawn": ZoneCTSpawn, "House": ZoneCTSpawn,
+		"BackAlley": ZoneCTSpawn, "SideAlley": ZoneCTSpawn,
+	},
+
+	// ── Nuke ──────────────────────────────────────────────────────────────
+	// A approach (upper): Hut/Squeaky/Rafters → A_MAIN
+	// B approach (lower): Ramp/Tunnels/Vents → B_MAIN
 	"nuke": {
 		"TSpawn": ZoneTSpawn, "Lobby": ZoneTSpawn, "Trophy": ZoneTSpawn,
-		"Hut": ZoneAApproach, "HutRoof": ZoneAApproach, "Squeaky": ZoneAApproach, "Rafters": ZoneAApproach,
+
+		"Hut": ZoneAMain, "HutRoof": ZoneAMain, "Squeaky": ZoneAMain, "Rafters": ZoneAMain,
+
 		"BombsiteA": ZoneASite, "Heaven": ZoneASite, "Hell": ZoneASite,
 		"Mini": ZoneASite, "Catwalk": ZoneASite,
-		"Ramp": ZoneBApproach, "Tunnels": ZoneBApproach, "Vents": ZoneBApproach,
+
+		"Ramp": ZoneBMain, "Tunnels": ZoneBMain, "Vents": ZoneBMain,
+
 		"BombsiteB": ZoneBSite, "Decon": ZoneBSite, "Control": ZoneBSite,
+
 		"Outside": ZoneMid, "Silo": ZoneMid, "Crane": ZoneMid,
 		"Roof": ZoneMid, "Secret": ZoneMid, "Garage": ZoneMid,
+
 		"CTSpawn": ZoneCTSpawn, "Admin": ZoneCTSpawn, "LockerRoom": ZoneCTSpawn,
 		"Observation": ZoneCTSpawn, "Vending": ZoneCTSpawn,
 	},
-	"dust2": {
-		"TSpawn": ZoneTSpawn, "TOutside": ZoneTSpawn, "OutsideLong": ZoneTSpawn, "OutsideTunnel": ZoneTSpawn,
-		"Long": ZoneAApproach, "LongDoors": ZoneAApproach, "Pit": ZoneAApproach,
-		"Catwalk": ZoneAApproach, "Short": ZoneAApproach, "ShortStairs": ZoneAApproach,
-		"BombsiteA": ZoneASite, "Goose": ZoneASite, "Ramp": ZoneASite, "Barrels": ZoneASite, "ARamp": ZoneASite,
-		"UpperTunnels": ZoneBApproach, "LowerTunnels": ZoneBApproach, "Tunnel": ZoneBApproach,
-		"BombsiteB": ZoneBSite, "BackPlatform": ZoneBSite, "Window": ZoneBSite,
-		"Closet": ZoneBSite, "BigBox": ZoneBSite, "BDoors": ZoneBSite,
-		"Middle": ZoneMid, "TopofMid": ZoneMid, "Xbox": ZoneMid,
-		"MidDoors": ZoneMid, "Palm": ZoneMid,
-		"CTSpawn": ZoneCTSpawn, "CTMid": ZoneCTSpawn,
+
+	// ── Overpass ──────────────────────────────────────────────────────────
+	// A approach: Park area → A_MAIN
+	// B approach: Canal/Water → B_MAIN
+	"overpass": {
+		"TSpawn": ZoneTSpawn, "TStairs": ZoneTSpawn,
+
+		"Playground": ZoneAMain, "Fountain": ZoneAMain, "LowerPark": ZoneAMain,
+		"UpperPark": ZoneAMain, "Restroom": ZoneAMain, "SideAlley": ZoneAMain,
+
+		"BombsiteA": ZoneASite, "BackofA": ZoneASite,
+		"UnderA": ZoneASite, "SnipersNest": ZoneASite,
+
+		"Canal": ZoneBMain, "Water": ZoneBMain, "Pipe": ZoneBMain, "Walkway": ZoneBMain,
+
+		"BombsiteB": ZoneBSite, "Bridge": ZoneBSite, "StorageRoom": ZoneBSite,
+
+		"Connector": ZoneMid, "Construction": ZoneMid, "Lobby": ZoneMid,
+		"Stairs": ZoneMid, "Tunnels": ZoneMid, "Alley": ZoneMid,
+
+		"CTSpawn": ZoneCTSpawn,
 	},
-	"mirage": {
-		"TSpawn": ZoneTSpawn, "TRamp": ZoneTSpawn,
-		"PalaceInterior": ZoneAApproach, "PalaceAlley": ZoneAApproach, "Stairs": ZoneAApproach,
-		"BombsiteA": ZoneASite, "Balcony": ZoneASite, "Truck": ZoneASite, "Scaffolding": ZoneASite,
-		"Apartments": ZoneBApproach, "Catwalk": ZoneBApproach,
-		"BombsiteB": ZoneBSite, "Tunnel": ZoneBSite, "TunnelStairs": ZoneBSite,
-		"TicketBooth": ZoneBSite,
-		"Middle": ZoneMid, "TopofMid": ZoneMid, "Connector": ZoneMid,
-		"Jungle": ZoneMid, "SnipersNest": ZoneMid, "Ladder": ZoneMid, "Shop": ZoneMid,
-		"CTSpawn": ZoneCTSpawn, "House": ZoneCTSpawn, "BackAlley": ZoneCTSpawn, "SideAlley": ZoneCTSpawn,
-	},
+
+	// ── Ancient ───────────────────────────────────────────────────────────
 	"ancient": {
 		"TSpawn": ZoneTSpawn,
-		"AMain": ZoneAApproach, "AHalls": ZoneAApproach, "Long": ZoneAApproach,
+
+		"AMain": ZoneAMain, "AHalls": ZoneAMain, "Long": ZoneALong,
+
 		"BombsiteA": ZoneASite, "Boost": ZoneASite,
-		"BRamp": ZoneBApproach, "BMain": ZoneBApproach,
+
+		"BRamp": ZoneBMain, "BMain": ZoneBMain,
+
 		"BombsiteB": ZoneBSite, "Dark": ZoneBSite, "Excavation": ZoneBSite,
+
 		"Middle": ZoneMid, "Connector": ZoneMid, "Split": ZoneMid,
 		"Doors": ZoneMid, "Elbow": ZoneMid, "Pit": ZoneMid,
+
 		"CTSpawn": ZoneCTSpawn, "Temple": ZoneCTSpawn, "SnipersNest": ZoneCTSpawn,
 		"Heaven": ZoneCTSpawn, "Tunnel": ZoneCTSpawn, "Water": ZoneCTSpawn, "Ruins": ZoneCTSpawn,
 	},
+
+	// ── Anubis ────────────────────────────────────────────────────────────
 	"anubis": {
 		"TSpawn": ZoneTSpawn,
-		"AMain": ZoneAApproach, "ALong": ZoneAApproach, "Bridge": ZoneAApproach,
+
+		"AMain": ZoneAMain, "ALong": ZoneALong, "Bridge": ZoneAMain,
+
 		"BombsiteA": ZoneASite, "Heaven": ZoneASite, "Palace": ZoneASite,
-		"BMain": ZoneBApproach, "Canal": ZoneBApproach, "Alley": ZoneBApproach,
+
+		"BMain": ZoneBMain, "Canal": ZoneBMain, "Alley": ZoneBMain,
+
 		"BombsiteB": ZoneBSite, "Ruins": ZoneBSite,
+
 		"Middle": ZoneMid, "Connector": ZoneMid, "TopofMid": ZoneMid,
+
 		"CTSpawn": ZoneCTSpawn, "BackSite": ZoneCTSpawn,
 	},
+
+	// ── Vertigo ───────────────────────────────────────────────────────────
 	"vertigo": {
 		"TSpawn": ZoneTSpawn,
-		"ARamp": ZoneAApproach, "AShort": ZoneAApproach, "Ladder": ZoneAApproach,
+
+		"ARamp": ZoneAMain, "AShort": ZoneAShort, "Ladder": ZoneAShort,
 		"BombsiteA": ZoneASite, "Headshot": ZoneASite, "Boost": ZoneASite,
-		"BStairs": ZoneBApproach, "Window": ZoneBApproach,
+
+		"BStairs": ZoneBMain, "Window": ZoneBMain,
 		"BombsiteB": ZoneBSite, "Scaffold": ZoneBSite,
+
 		"Middle": ZoneMid, "Connector": ZoneMid, "Tunnels": ZoneMid,
+
 		"CTSpawn": ZoneCTSpawn, "Elevator": ZoneCTSpawn,
 	},
+
+	// ── Train ─────────────────────────────────────────────────────────────
 	"train": {
 		"TSpawn": ZoneTSpawn,
-		"ALong": ZoneAApproach, "PopDog": ZoneAApproach, "Ladder": ZoneAApproach,
+
+		"ALong": ZoneALong, "PopDog": ZoneALong, "Ladder": ZoneAMain,
 		"BombsiteA": ZoneASite,
-		"Upper": ZoneBApproach, "BHall": ZoneBApproach, "Oil": ZoneBApproach,
+
+		"Upper": ZoneBMain, "BHall": ZoneBMain, "Oil": ZoneBMain,
 		"BombsiteB": ZoneBSite, "BPlatform": ZoneBSite,
+
 		"Middle": ZoneMid, "Connector": ZoneMid, "Showers": ZoneMid,
+
 		"CTSpawn": ZoneCTSpawn, "Ivy": ZoneCTSpawn,
 	},
 }
 
 // resolveZone maps a PlaceName to a tactical zone using the per-map lookup
-// table. Falls back to generic rules if the place is not in the table.
+// table. Falls back to generic keyword rules for unknown callouts.
 func resolveZone(mapName, placeName string) string {
 	if placeName == "" || placeName == "Unknown" {
 		return ZoneUnknown
@@ -132,18 +243,16 @@ func resolveZone(mapName, placeName string) string {
 			return zone
 		}
 	}
-	// Generic fallback for maps/callouts not in tables
+	// Generic fallback: keyword matching for unmapped callouts
 	lower := strings.ToLower(placeName)
-	if strings.Contains(lower, "bombsitea") {
+	switch {
+	case strings.Contains(lower, "bombsitea"):
 		return ZoneASite
-	}
-	if strings.Contains(lower, "bombsiteb") {
+	case strings.Contains(lower, "bombsiteb"):
 		return ZoneBSite
-	}
-	if strings.Contains(lower, "ctspawn") {
+	case strings.Contains(lower, "ctspawn"):
 		return ZoneCTSpawn
-	}
-	if strings.Contains(lower, "tspawn") {
+	case strings.Contains(lower, "tspawn"):
 		return ZoneTSpawn
 	}
 	return ZoneUnknown
@@ -158,16 +267,16 @@ func normalizeMapName(raw string) string {
 
 // RoundTactic holds the retrospective classification for one round.
 type RoundTactic struct {
-	Round        int
-	TTacticLabel string
+	Round         int
+	TTacticLabel  string
 	CTTacticLabel string
-	PlantSite    string
-	RoundWinner  string
-	TUtilityUsed int
-	PlantTime    float64
-	C4Path       string
-	TFormation20 string
-	TFormation40 string
+	PlantSite     string
+	RoundWinner   string
+	TUtilityUsed  int
+	PlantTime     float64
+	C4Path        string
+	TFormation20  string
+	TFormation40  string
 }
 
 // enrichMapActivities fills the 4 new columns on every MapActivity row:
@@ -176,28 +285,26 @@ func enrichMapActivities(state *ProcessingState) []RoundTactic {
 	mapName := state.mapName
 	activities := state.mapActivities
 
-	// Pre-compute per-round info needed for retrospective tactic classification
 	roundSummaryMap := make(map[int]RoundSummary)
 	for _, rs := range state.roundSummaries {
 		roundSummaryMap[rs.Round] = rs
 	}
 	utilityByRound := countUtilityByRound(state.tacticalEvents)
 
-	// Index activities by round for efficient lookups
-	roundActivities := make(map[int][]int) // round -> indices into activities
+	roundActivities := make(map[int][]int)
 	for i := range activities {
 		roundActivities[activities[i].Round] = append(roundActivities[activities[i].Round], i)
 	}
 
-	// Phase 1: Set TacticalZone on every row (100% accurate from per-map table)
+	// Phase 1: TacticalZone from per-map callout table
 	for i := range activities {
 		activities[i].TacticalZone = resolveZone(mapName, activities[i].PlaceName)
 	}
 
-	// Phase 2: Compute per-round start times (first non-buy tick)
+	// Phase 2: Per-round start times
 	roundStartTimes := computeRoundStartTimes(activities, roundActivities)
 
-	// Phase 3: Set RoundPhaseDetail on every row
+	// Phase 3: RoundPhaseDetail
 	for i := range activities {
 		r := activities[i].Round
 		roundStart := roundStartTimes[r]
@@ -207,9 +314,9 @@ func enrichMapActivities(state *ProcessingState) []RoundTactic {
 		)
 	}
 
-	// Phase 4: Compute TeamFormation per tick
+	// Phase 4: TeamFormation per tick
 	type tickKey struct{ Round, Tick int }
-	tickPlayers := make(map[tickKey][]int) // tickKey -> indices
+	tickPlayers := make(map[tickKey][]int)
 	for i := range activities {
 		if activities[i].IsAlive {
 			k := tickKey{activities[i].Round, activities[i].Tick}
@@ -229,7 +336,7 @@ func enrichMapActivities(state *ProcessingState) []RoundTactic {
 		_ = k
 	}
 
-	// Phase 5: Retrospective tactic classification per round, then stamp every row
+	// Phase 5: Retrospective tactic classification, then stamp every row
 	var rounds []int
 	for r := range roundActivities {
 		rounds = append(rounds, r)
@@ -249,7 +356,6 @@ func enrichMapActivities(state *ProcessingState) []RoundTactic {
 		roundTacticMap[r] = rt
 	}
 
-	// Stamp RoundTactic on every activity row
 	for i := range activities {
 		rt := roundTacticMap[activities[i].Round]
 		if activities[i].PlayerTeam == "T" {
@@ -308,17 +414,17 @@ func computeFormation(activities []MapActivity, indices []int, team string) stri
 	for _, idx := range indices {
 		a := activities[idx]
 		if a.PlayerTeam == team && a.IsAlive {
-			zone := a.TacticalZone
-			switch zone {
-			case ZoneASite, ZoneAApproach:
+			z := a.TacticalZone
+			switch {
+			case isAside(z):
 				counts["A"]++
-			case ZoneBSite, ZoneBApproach:
+			case isBside(z):
 				counts["B"]++
-			case ZoneMid:
+			case z == ZoneMid:
 				counts["Mid"]++
-			case ZoneTSpawn:
+			case z == ZoneTSpawn:
 				counts["Spawn"]++
-			case ZoneCTSpawn:
+			case z == ZoneCTSpawn:
 				counts["Spawn"]++
 			default:
 				counts["Other"]++
@@ -337,6 +443,56 @@ func computeFormation(activities []MapActivity, indices []int, team string) stri
 	return strings.Join(parts, "_")
 }
 
+// primaryApproachRoute returns a label suffix ("_Long", "_Short", "_Tunnels",
+// "_Banana", etc.) if one approach sub-zone clearly dominated T movement toward
+// targetSite in the first 35 s. Returns "" for maps that only have A_MAIN/B_MAIN.
+func primaryApproachRoute(activities []MapActivity, indices []int, roundStart float64, targetSite string) string {
+	counts := map[string]int{}
+	for _, idx := range indices {
+		a := activities[idx]
+		if a.PlayerTeam != "T" || !a.IsAlive {
+			continue
+		}
+		elapsed := a.Time - roundStart
+		if elapsed < 0 || elapsed > 35 {
+			continue
+		}
+		switch a.TacticalZone {
+		case ZoneALong:
+			if targetSite == "A" {
+				counts["Long"]++
+			}
+		case ZoneAShort:
+			if targetSite == "A" {
+				counts["Short"]++
+			}
+		case ZoneBTunnels:
+			if targetSite == "B" {
+				counts["Tunnels"]++
+			}
+		case ZoneBBanana:
+			if targetSite == "B" {
+				counts["Banana"]++
+			}
+		}
+	}
+	if len(counts) == 0 {
+		return ""
+	}
+	best, bestCount, total := "", 0, 0
+	for route, n := range counts {
+		total += n
+		if n > bestCount {
+			best, bestCount = route, n
+		}
+	}
+	// Only emit a route suffix when one route accounts for ≥60% of approach ticks.
+	if total == 0 || float64(bestCount)/float64(total) < 0.60 {
+		return ""
+	}
+	return "_" + best
+}
+
 func classifyRoundTacticRetrospective(activities []MapActivity, indices []int, summary RoundSummary, utilityUsed int, roundStart float64) RoundTactic {
 	rt := RoundTactic{
 		PlantSite:    summary.BombSite,
@@ -351,7 +507,7 @@ func classifyRoundTacticRetrospective(activities []MapActivity, indices []int, s
 		return rt
 	}
 
-	// Build C4 carrier zone path
+	// C4 carrier zone path
 	c4Zones := []string{}
 	lastC4Zone := ""
 	for _, idx := range indices {
@@ -366,11 +522,11 @@ func classifyRoundTacticRetrospective(activities []MapActivity, indices []int, s
 	}
 	rt.C4Path = strings.Join(c4Zones, "->")
 
-	// Formation snapshots at 20s and 40s after round start
+	// Formation snapshots
 	rt.TFormation20 = formationAtTime(activities, indices, roundStart, 20, "T")
 	rt.TFormation40 = formationAtTime(activities, indices, roundStart, 40, "T")
 
-	// Determine target site (100% certain if bomb planted)
+	// Determine target site
 	targetSite := ""
 	if summary.BombSite == "A" {
 		targetSite = "A"
@@ -380,33 +536,27 @@ func classifyRoundTacticRetrospective(activities []MapActivity, indices []int, s
 		targetSite = inferTargetFromPositions(activities, indices)
 	}
 
-	// Detect split: at the time of first site entry, did T players approach from
-	// 2+ different macro zones?
 	isSplit := false
 	if targetSite != "" {
 		isSplit = detectSplit(activities, indices, roundStart, targetSite)
 	}
-
-	// Detect fake: 2+ T entered one approach zone first, but bomb went to other site
 	isFake, fakeFrom := detectFake(activities, indices, roundStart, targetSite)
-
-	// Detect mid control: 3+ T in MID for 15+ seconds before site commit
 	isMidControl := detectMidControl(activities, indices, roundStart)
-
-	// Eco/save detection: TStartMoney < $10000 total ($2000 avg per player)
-	// TEquipmentVal is unreliable (captured before buy phase), so we use money.
 	isEco := summary.TStartMoney > 0 && summary.TStartMoney < 10000
 
-	// Classification rules (deterministic, priority order)
 	plantTimeRel := summary.PlantTime
 	hasPlant := summary.BombSite != ""
 
+	// Route suffix for fine-grained labels on maps with sub-approach zones
+	routeSuffix := primaryApproachRoute(activities, indices, roundStart, targetSite)
+
 	if isEco {
-		if targetSite == "A" {
+		switch targetSite {
+		case "A":
 			rt.TTacticLabel = "Eco_A"
-		} else if targetSite == "B" {
+		case "B":
 			rt.TTacticLabel = "Eco_B"
-		} else {
+		default:
 			rt.TTacticLabel = "Eco"
 		}
 	} else if isFake && targetSite != "" {
@@ -415,14 +565,14 @@ func classifyRoundTacticRetrospective(activities []MapActivity, indices []int, s
 		} else if fakeFrom == "B" && targetSite == "A" {
 			rt.TTacticLabel = "Fake_B_to_A"
 		} else {
-			rt.TTacticLabel = fmt.Sprintf("Execute_%s", targetSite)
+			rt.TTacticLabel = fmt.Sprintf("Execute_%s%s", targetSite, routeSuffix)
 		}
 	} else if isSplit && targetSite != "" {
 		rt.TTacticLabel = fmt.Sprintf("Split_%s", targetSite)
 	} else if hasPlant && plantTimeRel > 0 && plantTimeRel <= 30 && utilityUsed < 3 {
-		rt.TTacticLabel = fmt.Sprintf("Rush_%s", targetSite)
+		rt.TTacticLabel = fmt.Sprintf("Rush_%s%s", targetSite, routeSuffix)
 	} else if hasPlant && utilityUsed >= 3 {
-		rt.TTacticLabel = fmt.Sprintf("Execute_%s", targetSite)
+		rt.TTacticLabel = fmt.Sprintf("Execute_%s%s", targetSite, routeSuffix)
 	} else if isMidControl {
 		if targetSite != "" {
 			rt.TTacticLabel = fmt.Sprintf("MidControl_to_%s", targetSite)
@@ -430,20 +580,12 @@ func classifyRoundTacticRetrospective(activities []MapActivity, indices []int, s
 			rt.TTacticLabel = "Mid_Control"
 		}
 	} else if targetSite != "" {
-		if hasPlant && utilityUsed >= 3 {
-			rt.TTacticLabel = fmt.Sprintf("Execute_%s", targetSite)
-		} else if hasPlant {
-			rt.TTacticLabel = fmt.Sprintf("Execute_%s", targetSite)
-		} else {
-			rt.TTacticLabel = fmt.Sprintf("Push_%s", targetSite)
-		}
+		rt.TTacticLabel = fmt.Sprintf("Execute_%s%s", targetSite, routeSuffix)
 	} else {
 		rt.TTacticLabel = "Default"
 	}
 
-	// CT tactic from positions at 20s mark
 	rt.CTTacticLabel = classifyCTTactic(activities, indices, roundStart)
-
 	return rt
 }
 
@@ -476,17 +618,16 @@ func formationAtTime(activities []MapActivity, indices []int, roundStart, offset
 }
 
 func inferTargetFromPositions(activities []MapActivity, indices []int) string {
-	aCount := 0
-	bCount := 0
+	aCount, bCount := 0, 0
 	for _, idx := range indices {
 		a := activities[idx]
 		if a.PlayerTeam != "T" || !a.IsAlive {
 			continue
 		}
 		z := a.TacticalZone
-		if z == ZoneASite || z == ZoneAApproach {
+		if isAside(z) {
 			aCount++
-		} else if z == ZoneBSite || z == ZoneBApproach {
+		} else if isBside(z) {
 			bCount++
 		}
 	}
@@ -499,8 +640,7 @@ func inferTargetFromPositions(activities []MapActivity, indices []int) string {
 	return ""
 }
 
-// detectSplit checks if at the time of first site entry, T players were
-// approaching from 2+ different macro directions.
+// detectSplit checks if at first site entry, T players came from 2+ distinct zones.
 func detectSplit(activities []MapActivity, indices []int, roundStart float64, targetSite string) bool {
 	var siteZone string
 	if targetSite == "A" {
@@ -508,7 +648,6 @@ func detectSplit(activities []MapActivity, indices []int, roundStart float64, ta
 	} else {
 		siteZone = ZoneBSite
 	}
-	// Find the tick when first T enters the target site
 	entryTick := -1
 	for _, idx := range indices {
 		a := activities[idx]
@@ -520,7 +659,6 @@ func detectSplit(activities []MapActivity, indices []int, roundStart float64, ta
 	if entryTick < 0 {
 		return false
 	}
-	// At that tick, check T zones (within +/- 64 ticks = 0.5s)
 	approachZones := map[string]bool{}
 	for _, idx := range indices {
 		a := activities[idx]
@@ -541,15 +679,12 @@ func detectSplit(activities []MapActivity, indices []int, roundStart float64, ta
 	return len(approachZones) >= 3
 }
 
-// detectFake checks if 2+ T players were in one approach zone early, but bomb
-// was planted at the opposite site.
+// detectFake checks if T players clustered toward one site early but bomb planted opposite.
 func detectFake(activities []MapActivity, indices []int, roundStart float64, targetSite string) (bool, string) {
 	if targetSite == "" {
 		return false, ""
 	}
-	// Check T positions at 15-25s into the round
-	aApproach := 0
-	bApproach := 0
+	aApproach, bApproach := 0, 0
 	for _, idx := range indices {
 		a := activities[idx]
 		if a.PlayerTeam != "T" || !a.IsAlive {
@@ -558,9 +693,9 @@ func detectFake(activities []MapActivity, indices []int, roundStart float64, tar
 		elapsed := a.Time - roundStart
 		if elapsed >= 15 && elapsed <= 25 {
 			z := a.TacticalZone
-			if z == ZoneAApproach || z == ZoneASite {
+			if isAside(z) {
 				aApproach++
-			} else if z == ZoneBApproach || z == ZoneBSite {
+			} else if isBside(z) {
 				bApproach++
 			}
 		}
@@ -586,17 +721,11 @@ func detectMidControl(activities []MapActivity, indices []int, roundStart float6
 			midTicks++
 		}
 	}
-	// 3+ players in mid for ~5+ seconds (at 2 ticks/frame * 10 players, ~30 T ticks/sec)
 	return midTicks >= 150
 }
 
 func classifyCTTactic(activities []MapActivity, indices []int, roundStart float64) string {
-	// Check CT positions at 20s mark
-	aCount := 0
-	bCount := 0
-	midCount := 0
-	aggressiveCount := 0
-	totalCT := 0
+	aCount, bCount, midCount, aggressiveCount, totalCT := 0, 0, 0, 0, 0
 	for _, idx := range indices {
 		a := activities[idx]
 		if a.PlayerTeam != "CT" || !a.IsAlive {
@@ -606,18 +735,19 @@ func classifyCTTactic(activities []MapActivity, indices []int, roundStart float6
 		if elapsed >= 18 && elapsed <= 22 {
 			totalCT++
 			z := a.TacticalZone
-			switch z {
-			case ZoneASite:
+			switch {
+			case z == ZoneASite:
 				aCount++
-			case ZoneBSite:
+			case z == ZoneBSite:
 				bCount++
-			case ZoneMid:
+			case z == ZoneMid:
 				midCount++
-			case ZoneTSpawn, ZoneAApproach, ZoneBApproach:
+			case z == ZoneTSpawn || isAside(z) || isBside(z):
 				aggressiveCount++
 			}
 		}
 	}
+	_ = totalCT
 	if aggressiveCount >= 5 {
 		return "Aggressive_Push"
 	}

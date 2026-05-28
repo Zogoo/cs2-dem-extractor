@@ -37,8 +37,9 @@ from collections import Counter
 from torch_geometric.data import Data
 
 TACTICAL_ZONES = [
-    "T_SPAWN", "A_APPROACH", "A_SITE", "B_APPROACH",
-    "B_SITE", "MID", "CT_SPAWN", "Unknown"
+    "T_SPAWN", "A_LONG", "A_SHORT", "A_MAIN", "A_SITE",
+    "B_TUNNELS", "B_BANANA", "B_MAIN", "B_SITE",
+    "MID", "CT_SPAWN", "Unknown",
 ]
 ZONE_TO_IDX = {z: i for i, z in enumerate(TACTICAL_ZONES)}
 
@@ -46,7 +47,7 @@ ZONE_TO_IDX = {z: i for i, z in enumerate(TACTICAL_ZONES)}
 # Classes below this threshold are merged into "Other".
 MIN_SAMPLES_PER_MAP = 2
 
-NUM_NODE_FEATURES = 25  # 3+1+1+1+1+1+1+8+3+3+1+1 (added Z, ViewDirectionY)
+NUM_NODE_FEATURES = 30  # 3+4+2+12(zone one-hot)+3+3+2+1(grenade)
 
 
 # ── Map stats ──────────────────────────────────────────────────────────────
@@ -137,6 +138,7 @@ def build_player_features(row, stats: dict) -> list:
     z_n = (z - stats["z_min"]) / stats["z_range"]
     vx = float(row.get("ViewDirectionX", 0.0)) if "ViewDirectionX" in row.index else 0.0
     vy = float(row.get("ViewDirectionY", 0.0)) if "ViewDirectionY" in row.index else 0.0
+    grenade_count = float(row.get("GrenadeCount", 0)) / 4.0 if "GrenadeCount" in row.index else 0.0
     return [
         x_n, y_n, z_n,
         float(row["Health"]) / 100.0,
@@ -150,6 +152,7 @@ def build_player_features(row, stats: dict) -> list:
         *one_hot_team(row["PlayerTeam"]),
         _dist(x, y, stats["a_cx"], stats["a_cy"], stats["diag"]),
         _dist(x, y, stats["b_cx"], stats["b_cy"], stats["diag"]),
+        grenade_count,
     ]
 
 
@@ -166,6 +169,7 @@ def build_dead_player_features(team: str, stats: dict) -> list:
         *one_hot_team(team),
         _dist(cx, cy, stats["a_cx"], stats["a_cy"], stats["diag"]),
         _dist(cx, cy, stats["b_cx"], stats["b_cy"], stats["diag"]),
+        0.0,                    # grenade_count
     ]
 
 
@@ -183,6 +187,7 @@ def build_bombsite_features(zone: str, stats: dict) -> list:
         *one_hot_team("none"),
         _dist(cx, cy, stats["a_cx"], stats["a_cy"], stats["diag"]),
         _dist(cx, cy, stats["b_cx"], stats["b_cy"], stats["diag"]),
+        0.0,                    # grenade_count
     ]
 
 
@@ -198,6 +203,7 @@ def build_bomb_features(x, y, zone: str, stats: dict) -> list:
         *one_hot_team("none"),
         _dist(float(x), float(y), stats["a_cx"], stats["a_cy"], stats["diag"]),
         _dist(float(x), float(y), stats["b_cx"], stats["b_cy"], stats["diag"]),
+        0.0,                    # grenade_count
     ]
 
 

@@ -35,7 +35,7 @@ from build_graphs import (
     load_graphs_per_map, load_graphs_per_map_from_cache,
     load_and_build_graphs, save_graphs, load_graphs, NUM_NODE_FEATURES
 )
-from model import TacticGCN
+from model import TacticGCN, TacticGAT
 
 
 # ── Helpers ────────────────────────────────────────────────────────────────
@@ -142,7 +142,8 @@ def round_based_split(graphs: list, test_size: float = 0.2,
 
 def train_one_map(map_name: str, graphs: list, tactic_classes: list,
                   epochs: int, batch_size: int, lr: float,
-                  hidden: int, save_dir: str, device: torch.device):
+                  hidden: int, save_dir: str, device: torch.device,
+                  model_type: str = "gcn"):
     """Train and evaluate one model for a single map."""
     num_classes = len(tactic_classes)
     print(f"\n{'='*60}")
@@ -176,13 +177,23 @@ def train_one_map(map_name: str, graphs: list, tactic_classes: list,
     class_weights = compute_weights(train_g, num_classes).to(device)
     criterion = torch.nn.CrossEntropyLoss(weight=class_weights)
 
-    model = TacticGCN(
-        num_node_features=NUM_NODE_FEATURES,
-        num_classes=num_classes,
-        hidden_channels=hidden,
-        dropout=0.1,
-        num_layers=2,
-    ).to(device)
+    if model_type == "gat":
+        model = TacticGAT(
+            num_node_features=NUM_NODE_FEATURES,
+            num_classes=num_classes,
+            hidden_channels=hidden,
+            heads=4,
+            dropout=0.1,
+            num_layers=2,
+        ).to(device)
+    else:
+        model = TacticGCN(
+            num_node_features=NUM_NODE_FEATURES,
+            num_classes=num_classes,
+            hidden_channels=hidden,
+            dropout=0.1,
+            num_layers=2,
+        ).to(device)
 
     optimizer = torch.optim.AdamW(model.parameters(), lr=lr, weight_decay=1e-5)
     # Reduce LR when test accuracy stops improving — smarter than fixed StepLR
@@ -249,7 +260,7 @@ def train_one_map(map_name: str, graphs: list, tactic_classes: list,
 def train_per_map(output_dir: str = None, graphs_dir: str = None,
                   epochs: int = 250, batch_size: int = 16,
                   lr: float = 0.0002, hidden: int = 64,
-                  save_dir: str = None):
+                  save_dir: str = None, model_type: str = "gcn"):
     """Train one GCN model per map using granular per-map labels.
 
     Args:
@@ -289,6 +300,7 @@ def train_per_map(output_dir: str = None, graphs_dir: str = None,
             hidden=hidden,
             save_dir=save_dir,
             device=device,
+            model_type=model_type,
         )
         results[map_name] = {"model": model, "acc": acc,
                              "classes": info["classes"]}
@@ -347,6 +359,7 @@ def train_cross_map(output_dir: str = None, epochs: int = 250,
         hidden=hidden,
         save_dir=save_dir,
         device=device,
+        model_type="gcn",
     )
     return model, acc
 
@@ -498,9 +511,12 @@ if __name__ == "__main__":
                         help="Single cross-map model instead of per-map models")
     parser.add_argument("--epochs", type=int, default=None,
                         help="Override default epoch count")
+    parser.add_argument("--model", choices=["gcn", "gat"], default="gcn",
+                        help="Model architecture: gcn (default) or gat (attention)")
     parsed = parser.parse_args()
 
     graphs_dir = parsed.graphs_dir
+    model_type = parsed.model
 
     if parsed.full:
         print("Full-dataset mode: training on ALL data, no test split.")
@@ -512,6 +528,6 @@ if __name__ == "__main__":
         train_cross_map(output_dir=parsed.output_dir,
                         epochs=parsed.epochs or 500)
     else:
-        print("Training per-map models (granular labels, recommended)...")
+        print(f"Training per-map models (granular labels, model={model_type})...")
         train_per_map(output_dir=parsed.output_dir, graphs_dir=graphs_dir,
-                      epochs=parsed.epochs or 500)
+                      epochs=parsed.epochs or 500, model_type=model_type)
